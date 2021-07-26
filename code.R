@@ -1,5 +1,6 @@
 library(SummarizedExperiment)
 library(TCGAbiolinks)
+require(EDASeq)
 
 qry.rna <- GDCquery(project = "NCICCR-DLBCL",
                     data.category= "Transcriptome Profiling",
@@ -12,14 +13,64 @@ table(as.factor(dat$sample_type))
 
 rnas.raw <- GDCprepare(qry.rna, summarizedExperiment = TRUE)
 
+# ANOTACION
 data <- assay(rnas.raw)
 rownames(data) <- rowData(rnas.raw)$external_gene_name
+rownames(rnas.raw) <- rowData(rnas.raw)$external_gene_name
 head(rownames(data))
 
+#! Filtro de los genes
+dim(data)
 dataFilt <- TCGAanalyze_Filtering(tabDF = data,
                                   method = "quantile",
                                   qnt.cut = 0.25)
-dim(dataFilt)
+threshold <- round(dim(data)[2]/2)
+ridx <- rowSums(dataFilt == 0) <= threshold
+dataFilt <- dataFilt[ridx, ]
+print(dim(dataFilt))    
+ridx <- rowMeans(dataFilt) >= 10
+dataFilt <- dataFilt[ridx, ]
+print(dim(dataFilt))
+rnas.raw <- rnas.raw[rownames(rnas.raw) %in% rownames(dataFilt), ]
 
-dataNorm <- TCGAanalyze_Normalization(tabDF = dataFilt, geneInfo = geneInfo)
+#! Filtro de las muestras
+rnas.raw$ann_arbor_clinical_stage <-   as.factor(rnas.raw$ann_arbor_clinical_stage)
+table(rnas.raw$ann_arbor_clinical_stage)
+etapas <- c("Stage I","Stage II","Stage III","Stage IV")
+etapas <- c("Stage I","Stage II")
+rnas.raw <- rnas.raw[,rnas.raw$ann_arbor_clinical_stage %in% etapas]
+
+
+dataNorm <- TCGAanalyze_Normalization(tabDF = assay(rnas.raw), geneInfo = geneInfo)
 dim(dataNorm)
+rnas.raw <- rnas.raw[rownames(rnas.raw) %in% rownames(dataNorm), ]
+rnas.raw <- rnas.raw[!duplicated(rownames(rnas.raw)),]
+
+print(dim(rnas.raw))
+
+source("tools.R")
+mypca(rnas.raw,"ann_arbor_clinical_stage",fout="PCAbefore.png")
+
+rnas.raw <- rnas.raw[!duplicated(rownames(rnas.raw)),]
+ginfo <- geneInfoHT[rownames(geneInfoHT) %in% rowData(rnas.raw)$ensembl_gene_id,]
+rnas.raw <- rnas.raw[rowData(rnas.raw)$ensembl_gene_id %in% rownames(geneInfoHT),]
+
+ln.data <- withinLaneNormalization(assay(rnas.raw), 
+                                   ginfo$geneLength, which = "full")
+gcn.data <- withinLaneNormalization(ln.data , ginfo$gcContent,
+                                    which = "full")
+norm.counts <- tmm(gcn.data, long = 1000, lc = 0, k = 0)
+noiseqData <- NOISeq::readData( norm.counts , factors = as.data.frame(rnas.raw$ann_arbor_clinical_stage))
+mydata2corr1 = NOISeq::ARSyNseq(noiseqData, norm = "n",  logtransf = FALSE)
+assay(rnas.raw) <- exprs(mydata2corr1)
+
+mypca(rnas.raw,"ann_arbor_clinical_stage",fout="PCAafter.png")
+
+st1 <- rnas.raw[,rnas.raw$ann_arbor_clinical_stage=="Stage I"]
+st2 <- rnas.raw[,rnas.raw$ann_arbor_clinical_stage=="Stage II"]
+
+# dataDEGs <- TCGAanalyze_DEA(mat1 = dataFilt[,1:10],
+#                             mat2 =  dataFilt[,20:30],
+#                             # Cond1type = "Stage I",
+#                             # Cond2type = "Stage II",
+#                             method = "glmLRT")
